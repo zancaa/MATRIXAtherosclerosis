@@ -21,8 +21,10 @@ model6 = @reaction_network begin
 end
 
 # Set initial conditions, time span and parameter values
+# To find multiple branches in bifurcation diagram, need to use multiple initial conditions
 # u0 = [:l => 2.5, :p => -6.0, :m => -2.1] # weird stuff!!
-# u0 = [:l => 0.0, :p => -10.0, :m => 10.0]
+u0_br2 = [:l => 1.5, :p => -10.0, :m => -10.0] # other branch for default parameters - but this is unstable, numerics won't find it (without some faffing)
+u0_br3 = [:l => 5/4, :p => 1/18, :m => 0] # another branch
 # u0 = [:l => 0.003, :p => 9e7, :m => 2e8]
 u0 = [:l => 0.0, :p => 1.0, :m => 1.0]
 tspan = (0.0, 1000.0)
@@ -55,8 +57,52 @@ display(fig)
 ss = hc_steady_states(model6, ps)
 
 ###### BIFURCATIONS #####
-# Use the below when plotting one value of σ_l
-σ_l_vals = [0.9, 1.2]
+#### Analytic results (to overlay numerics)) ####
+## To plot sigma_m versus l* 
+numerat_l(l_star) = ((d_m/ν_l)*((ξ_l + l_star)/l_star) + ν_m/ν_l) * (σ_l - d_l*l_star)
+denom_l(l_star) = (1/d_p) * ((σ_p*l_star)/(β_p + l_star) + (ν_p/ν_l)*(σ_l - d_l*l_star)) * (1 + (α/ν_l)*(σ_l - d_l*l_star))
+sigma_m_l(l_star) = numerat_l(l_star)/denom_l(l_star)
+## To plot sigma_m versus p* 
+p_star(l_star) = (1/d_p) * ((σ_p * l_star)/(β_p + l_star) + (ν_p/ν_l)*(σ_l - d_l*l_star))
+## To plot sigma_m versus m* 
+m_star(l_star) = (ξ_l + l_star)/(ν_l * l_star) * (σ_l - d_l * l_star)
+
+l_star_vals = 0.0:0.01:2.5
+
+# The below code plots 'nicer' curves than the OG
+# Function to extract line segments (otherwise get weird behaviours
+# -- i.e. random bits of lines that aren't coloured consistently
+function get_contiguous_segments(br, want_stable::Bool)
+    segments_p = Vector{Vector{Float64}}()
+    segments_x = Vector{Vector{Float64}}()
+    
+    current_p = Float64[]
+    current_x = Float64[]
+    
+    for pt in br.branch
+        if pt.stable == want_stable
+            push!(current_p, pt.param)
+            push!(current_x, pt.x[1]) 
+        else
+            if !isempty(current_p)
+                push!(segments_p, current_p)
+                push!(segments_x, current_x)
+                current_p = Float64[]
+                current_x = Float64[]
+            end
+        end
+    end
+    
+    if !isempty(current_p)
+        push!(segments_p, current_p)
+        push!(segments_x, current_x)
+    end
+    
+    return segments_p, segments_x
+end
+
+# Plots!
+σ_l_vals = [σ_l] # [0.9, 1.2]
 σ_l_ps_idx = findfirst(p -> first(p) == :σ_l, ps)
 par_order = Catalyst.parameters(model6)
 
@@ -80,70 +126,133 @@ opts_br = ContinuationPar(p_min = p_span[1], p_max = p_span[2], detect_fold = tr
 	newton_options = NewtonPar(tol = 1e-12)
 	)
 
-for plot_var in [:l, :m, :p]
+plot_var_vals = [:l, :m, :p]
+plot_vec = Vector{Plots.Plot}(undef, length(plot_var_vals))
+
+for (plt_idx, plot_var) in enumerate(plot_var_vals) 
 
 	plot_var_str = String(plot_var)
 
 	for (σ_l_idx, σ_l) in enumerate(σ_l_vals) # used a range of sigma_l's in places
 		p_start[σ_l_ps_idx] = :σ_l => σ_l
-		bprob = BifurcationProblem(model6, u_guess, p_start, bif_par; plot_var)
-
-		bif_dia = bifurcationdiagram(bprob, PALC(), 2, opts_br; bothside = true)
 		if length(σ_l_vals) == 1
-			col = [stb ? "#313973" : "#cd205a" for stb in bif_dia.γ.branch.stable]
-			ls = [stb ? :solid : :dash for stb in bif_dia.γ.branch.stable]
+			plot_vec[plt_idx] = Plots.plot()
+			for (u_g_idx, u_g) in enumerate([u_guess, u0_br2, u0_br3])
+				bprob = BifurcationProblem(model6, u_g, p_start, bif_par; plot_var)
 
-			##### Plotting nonsense #####
-			scene = Plots.plot(bif_dia; xguide = bif_par, yguide = plot_var, branchlabel = "Steady state", 
-				linewidthstable = 3.0, linewidthunstable = 2.0, 
-				color=col, markercolor = "#c59420", markersize=6,
-				xlabel=L"%$(bif_par_str)", ylabel=L"%$(plot_var_str)^*",
-				background_color_legend = nothing, 
-				foreground_color_legend = nothing,
-				right_margin = 8Plots.mm) 
+				# global branch1 = continuation(bprob, PALC(), opts_br; verbosity = 1, bothside = true)
+				bif_dia = bifurcationdiagram(bprob, PALC(), 2, opts_br; bothside = true)
 			
-			# Make nicer axes limits
-			Plots.xlims!(0.6, 1.0)
-			default_ylims = Plots.ylims()
-			# Extract index of plotting variable
-			idx = findfirst(p -> Symbolics.getname(p) == plot_var, species(model6))
-			Plots.ylims!(0.0, min(default_ylims[2],bif_dia.γ.specialpoint[end-1].x[idx]*2))
+				col = [stb ? "#313973" : "#cd205a" for stb in bif_dia.γ.branch.stable]
+				ls = [stb ? :solid : :dash for stb in bif_dia.γ.branch.stable]
 
-			# Amend legend
-			Plots.plot!(scene, [NaN], [NaN], 
-				color = "#313973",          
-				linestyle = :solid, 
-				linewidth = 3.0,
-				label = "Stable"
-			)
-			Plots.plot!(scene, [NaN], [NaN], 
-				color = "#cd205a",          
-				linestyle = :solid, 
-				linewidth = 2.0,
-				label = "Unstable"
-			)
-			Plots.scatter!(scene, [NaN], [NaN],
-				markerstrokewidth = 0,
-				markercolor = "#c59420",  
-				markersize = 6,           
-				label = "Branch point"     
-			)
+				# Plot each branch
+				for branch in [bif_dia.γ]  # add child branches as needed
+					segs_p_stable, segs_x_stable = get_contiguous_segments(branch, true)
+					segs_p_unstable, segs_x_unstable = get_contiguous_segments(branch, false)
+					
+					for (i, (p_seg, x_seg)) in enumerate(zip(segs_p_stable, segs_x_stable))
+						Plots.plot!(plot_vec[plt_idx], p_seg, x_seg,
+							color = "#313973",
+							linewidth = 3,
+							linestyle = :solid,
+							label = (i == 1 && u_g_idx == 1) ? "Stable" : "",
+							background_color_legend = nothing, 
+							foreground_color_legend = nothing,
+							xlabel=L"%$(bif_par_str)", ylabel=L"%$(plot_var_str)^*",
+						)
+					end
+					
+					bp_p = Float64[]
+					bp_x = Float64[]
+					for (i, (p_seg, x_seg)) in enumerate(zip(segs_p_unstable, segs_x_unstable))
+						Plots.plot!(plot_vec[plt_idx], p_seg, x_seg,
+							color = "#cd205a", 
+							linewidth = 3,
+							linestyle = :solid,
+							label = (i == 1 && u_g_idx == 1) ? "Unstable" : "",
+						)
+					end
 
-			# Remove OG labels
-			for s in scene.series_list
-				if s[:label] == "Steady state"
-					s[:label] = ""
+					# Extract and plot branch points
+					for pt in branch.specialpoint
+						if pt.type == :bp
+							push!(bp_p, pt.param)
+							# handle both scalar and vector x
+							if pt.x isa AbstractVector
+								push!(bp_x, pt.printsol.x[1])
+							else
+								push!(bp_x, pt.printsol.x)
+							end
+						end
+					end
+					
+					Plots.scatter!(plot_vec[plt_idx], bp_p, bp_x,
+						markershape = :circle,
+						markercolor = "#c59420",
+						markerstrokewidth = 0,
+						markersize = 6,
+						label = (u_g_idx == 1) ? "Branch point" : "",
+						background_color_legend = nothing, # Transparent background
+						foreground_color_legend = nothing,
+						xlabel=L"%$(bif_par_str)", ylabel=L"%$(plot_var_str)^*",
+					)
+				end
+
+				if u_g_idx == 1
+					# Make nicer axes limits
+					Plots.xlims!(0.6, 1.0)
+					default_ylims = Plots.ylims()
+					# Extract index of plotting variable
+					idx = findfirst(p -> Symbolics.getname(p) == plot_var, species(model6))
+					Plots.ylims!(0.0, min(default_ylims[2],bif_dia.γ.specialpoint[end-1].x[idx]*2))
 				end
 			end
-			for s in scene.series_list
-				if s[:label] == "bp"
-					s[:label] = ""
-				end
+			# Overlay analytic solution (could have these the other way around)
+			if plot_var == :l
+				Plots.plot!(
+					plot_vec[plt_idx],
+					sigma_m_l.(l_star_vals),
+					l_star_vals,
+					lw = 2.5,
+					color = "#d5acee",
+					linestyle = :dot,
+					label = "Analytic solution"
+				)
+			elseif plot_var == :m
+				Plots.plot!(
+					plot_vec[plt_idx],
+					sigma_m_l.(l_star_vals),
+					m_star.(l_star_vals),
+					lw = 2.5,
+					color = "#d5acee",
+					linestyle = :dot,
+					label = "Analytic solution"
+				)
+			elseif plot_var == :p
+				Plots.plot!(
+					plot_vec[plt_idx],
+					sigma_m_l.(l_star_vals),
+					p_star.(l_star_vals),
+					lw = 2.5,
+					color = "#d5acee",
+					linestyle = :dot,
+					label = "Analytic solution"
+				)
 			end
-			Plots.plot!(scene)
+
+			# Save!
 			savefig("model6_"*plot_var_str*"_sigma_m_sigma_l_"*replace(string(σ_l), "." => "p")*".png")
 			savefig("model6_"*plot_var_str*"_sigma_m_sigma_l_"*replace(string(σ_l), "." => "p")*".svg")
+
+			# Uncomment below if only want legend in first figure
+			# if plt_idx > 1
+			# 	plot!([],[], legend=false)
+			# end
 		elseif length(σ_l_vals) > 1
+			bprob = BifurcationProblem(model6, u_guess, p_start, bif_par; plot_var)
+			# global branch1 = continuation(bprob, PALC(), opts_br; verbosity = 1, bothside = true)
+			bif_dia = bifurcationdiagram(bprob, PALC(), 2, opts_br; bothside = true)
 			# Below code accounts for plotting when there are multiple branches (occurs for some values of σ_l)
 			# To be used when more than one σ_l is being plotted simultaneously
 			# Plot each branch
@@ -176,7 +285,7 @@ for plot_var in [:l, :m, :p]
 					Plots.plot!(fig, p_seg, x_seg,
 						color = color_array[σ_l_idx],
 						linewidth = 2,
-						linestyle = :dash,
+						linestyle = :dot,
 						label = "" 
 					)
 				end
@@ -194,6 +303,17 @@ for plot_var in [:l, :m, :p]
 			end
 		end
 	end
+end
+
+if length(σ_l_vals) == 1 
+	# This plotting is currently hideous, will need to update...
+	fig = Plots.plot(plot_vec..., layout=(length(plot_vec),1))
+	savefig(fig,"model6_sigma_m_sigma_l_"*replace(string(σ_l), "." => "p")*".png")
+	savefig(fig,"model6_sigma_m_sigma_l_"*replace(string(σ_l), "." => "p")*".svg")
+elseif length(σ_l_vals) > 1 
+	fig = Plots.plot(plot_vec..., layout=(1,length(plot_vec)))
+	savefig(fig,"model6_sigma_m_sigma_l_range.png")
+	savefig(fig,"model6_sigma_m_sigma_l_range.svg")
 end
 
 ####### Codimension-2 (plotting parameters against each other) #######
